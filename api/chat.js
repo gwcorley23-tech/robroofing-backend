@@ -1,8 +1,10 @@
 // Vercel serverless function: POST /api/chat
 // Deploy this folder to Vercel and set ANTHROPIC_API_KEY in the project env.
 import { runChat } from "../claude.js";
+import { applyCors } from "./_cors.js";
 
 export default async function handler(req, res) {
+  if (applyCors(req, res)) return; // handled OPTIONS preflight
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
   try {
     const { messages } = req.body || {};
