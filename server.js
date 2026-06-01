@@ -3,7 +3,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { runChat, runTriage } from "./claude.js";
+import { runChat, runTriage, runClaimReport } from "./claude.js";
 
 const app = express();
 app.use(express.json({ limit: "12mb" })); // roof photos arrive as base64
@@ -61,6 +61,26 @@ app.post("/api/triage", async (req, res) => {
   } catch (err) {
     console.error("triage error:", err);
     res.status(500).json({ error: "triage_failed", detail: err.message });
+  }
+});
+
+app.post("/api/claim", async (req, res) => {
+  try {
+    let { image, mediaType, notes, owner, address } = req.body || {};
+    if (!image) return res.status(400).json({ error: "Body must include { image } (base64 or data URL)" });
+
+    const m = image.match(/^data:(.+?);base64,(.*)$/s);
+    if (m) {
+      mediaType = mediaType || m[1];
+      image = m[2];
+    }
+    mediaType = mediaType || "image/jpeg";
+
+    const { report, usage } = await runClaimReport({ base64: image, mediaType, notes, owner, address });
+    res.json({ report, usage });
+  } catch (err) {
+    console.error("claim error:", err);
+    res.status(500).json({ error: "claim_failed", detail: err.message });
   }
 });
 

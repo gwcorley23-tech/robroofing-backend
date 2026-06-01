@@ -7,6 +7,7 @@ const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the environment
 // Default to Opus 4.7. Override per-endpoint via env if you want cheaper chat.
 const CHAT_MODEL = process.env.CHAT_MODEL || "claude-opus-4-7";
 const TRIAGE_MODEL = process.env.TRIAGE_MODEL || "claude-opus-4-7";
+const CLAIM_MODEL = process.env.CLAIM_MODEL || "claude-opus-4-7";
 
 const COMPANY = `Rooftoprob Roofing & Construction
 Owner: Robert Mills ("Rooftop Rob")
@@ -113,6 +114,35 @@ Respond with ONLY a JSON object (no markdown fences, no prose around it) in exac
 
 Be honest about uncertainty — if the photo is blurry, dark, or doesn't clearly show a roof, say so via low confidence and "cannot tell". Never invent damage that isn't visible.`;
 
+// System prompt for the AI Insurance Claim Packet generator.
+const CLAIM_SYSTEM = `You are a senior roofing inspector and insurance-claim specialist for Rooftoprob Roofing & Construction in Houston, TX. A homeowner has uploaded a photo of their roof and wants a preliminary inspection report they can use to start an insurance conversation.
+
+You are NOT producing a binding scope, a price, or a guaranteed insurance outcome. You produce an honest, professional PRELIMINARY assessment based ONLY on what is visible in the photo, written to be useful when talking to an insurance adjuster — and you always recommend a free on-site drone inspection to confirm.
+
+HARD RULES:
+ - Base everything ONLY on what is actually visible. NEVER invent damage, measurements, dates, or dollar amounts.
+ - NEVER state a price, price range, or payout figure.
+ - NEVER guarantee a claim will be approved.
+ - Be honest about uncertainty. If the photo is blurry, dark, partial, or not clearly a roof, lower the confidence and keep findings conservative.
+ - In the claim narrative you may reference, as general context (not legal advice): that storm/hail damage is commonly covered by Texas homeowner policies; that Texas Insurance Code §542 sets deadlines for insurers to acknowledge and pay valid claims; and that Texas law prohibits contractors from waiving or rebating deductibles. Do not over-claim.
+
+Write the claim_narrative in a calm, professional, adjuster-ready voice (third person, e.g. "The provided photograph shows ..."). It should describe observable conditions, note where storm/hail/wind damage is consistent with what's visible, and recommend a full on-site inspection to document the full scope.
+
+Respond with ONLY a JSON object (no markdown fences, no prose around it) in exactly this shape:
+{
+  "roof_type": "string — e.g. asphalt/composition shingle, metal, tile, flat/TPO, unclear",
+  "overall_severity": "none | minor | moderate | severe | cannot tell",
+  "storm_or_hail_indicators": true | false,
+  "findings": [
+    { "area": "e.g. Field shingles, Ridge/Hip, Flashing, Valleys, Gutters, Decking", "observation": "what is actually visible", "severity": "none | minor | moderate | severe", "recommendation": "short recommended action" }
+  ],
+  "recommended_scope": ["short plain-language scope items to verify/address on-site"],
+  "claim_narrative": "1-2 short professional paragraphs an adjuster can read",
+  "homeowner_summary": "2-3 plain-English sentences for the homeowner",
+  "next_steps": ["short, friendly next-step bullets for the homeowner"],
+  "confidence": "low | medium | high"
+}`;
+
 // Pull the assistant's text out of a Messages response.
 function textOf(message) {
   return message.content
@@ -183,4 +213,48 @@ export async function runTriage({ base64, mediaType, notes }) {
   }
 
   return { assessment, usage: message.usage };
+}
+
+export async function runClaimReport({ base64, mediaType, notes, owner, address }) {
+  const ctx = [];
+  if (owner) ctx.push(`Homeowner: ${owner}`);
+  if (address) ctx.push(`Property address: ${address}`);
+  if (notes) ctx.push(`Homeowner note: ${notes}`);
+  const ctxText = ctx.length ? ctx.join("\n") + "\n\n" : "";
+
+  const userBlocks = [
+    {
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: base64 },
+    },
+    {
+      type: "text",
+      text: `${ctxText}Produce the preliminary roof inspection & claim report JSON for this photo.`,
+    },
+  ];
+
+  const message = await client.messages.create({
+    model: CLAIM_MODEL,
+    max_tokens: 2048,
+    thinking: { type: "adaptive" },
+    system: [
+      {
+        type: "text",
+        text: CLAIM_SYSTEM,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
+    messages: [{ role: "user", content: userBlocks }],
+  });
+
+  const raw = textOf(message);
+  let report;
+  try {
+    report = JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    report = match ? JSON.parse(match[0]) : { homeowner_summary: raw };
+  }
+
+  return { report, usage: message.usage };
 }
